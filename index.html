@@ -258,6 +258,57 @@
         </div>
       </div>
 
+      <div class="card">
+        <span class="eyebrow">Lồng tiếng — ElevenLabs</span>
+        <h2 style="margin-bottom:6px">Giọng đọc AI</h2>
+        <p class="hint">Dán API key ElevenLabs của anh (chỉ lưu trong trình duyệt này). Lấy key tại elevenlabs.io → Profile → API Keys.</p>
+        <div class="field">
+          <label class="lab" for="xiKey">API key ElevenLabs</label>
+          <input type="password" id="xiKey" placeholder="sk_..." autocomplete="off" />
+        </div>
+        <div class="toolbar">
+          <button class="btn ghost" id="xiLoadVoices">Tải danh sách giọng</button>
+          <button class="btn ghost" id="xiFill">Tự điền kịch bản từ các cảnh</button>
+        </div>
+        <div class="field">
+          <label class="lab" for="xiVoice">Chọn giọng đọc</label>
+          <select id="xiVoice" style="width:100%"><option value="">— Bấm "Tải danh sách giọng" —</option></select>
+        </div>
+        <div class="row">
+          <div class="name">Model<small>Multilingual v2 hợp tiếng Việt</small></div>
+          <div class="val"><select id="xiModel" style="width:auto">
+            <option value="eleven_multilingual_v2">Multilingual v2 (khuyên dùng)</option>
+            <option value="eleven_turbo_v2_5">Turbo v2.5 (nhanh, rẻ)</option>
+          </select></div>
+        </div>
+        <div class="row">
+          <div class="name">Độ ổn định<small>Cao = đều · thấp = biểu cảm</small></div>
+          <div class="val"><input type="range" id="xiStab" min="0" max="1" step="0.05" value="0.5"/><output id="xiStabV">50%</output></div>
+        </div>
+        <div class="row">
+          <div class="name">Độ giống giọng gốc<small>Similarity</small></div>
+          <div class="val"><input type="range" id="xiSim" min="0" max="1" step="0.05" value="0.75"/><output id="xiSimV">75%</output></div>
+        </div>
+        <div class="field">
+          <label class="lab" for="xiScript">Kịch bản lồng tiếng</label>
+          <textarea id="xiScript" rows="5" placeholder="Nhập lời đọc, hoặc bấm 'Tự điền kịch bản từ các cảnh'." style="width:100%;background:#141821;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:10px 12px;font:inherit;line-height:1.5;resize:vertical;box-sizing:border-box"></textarea>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="xiGen">Tạo lồng tiếng</button>
+        </div>
+        <p class="hint" id="xiStatus"></p>
+        <audio id="xiAudio" controls style="display:none;width:100%;margin-top:6px"></audio>
+        <div class="dl" id="xiDl"></div>
+        <div class="row" style="margin-top:8px">
+          <div class="name">Ghép vào video<small>Trộn lồng tiếng khi xuất reel</small></div>
+          <div class="val"><label class="switch"><input type="checkbox" id="xiUse"><span class="slider"></span></label></div>
+        </div>
+        <div class="row">
+          <div class="name">Âm lượng lồng tiếng<small>So với tiếng clip</small></div>
+          <div class="val"><input type="range" id="xiVol" min="0" max="1.5" step="0.05" value="1"/><output id="xiVolV">100%</output></div>
+        </div>
+      </div>
+
       <div class="card expwrap">
         <span class="eyebrow">Bước 3 — Xuất</span>
         <h2 style="margin-bottom:12px">Xuất reel</h2>
@@ -282,9 +333,10 @@
   const S = {
     scenes: [],            // {id,file,url,video,dur,thumb,style,head,sub,cta,started}
     sel: -1,
-    settings:{aspect:'9:16', gold:'#C9A55A', trans:0.5, scrim:0.82, accent:true, fade:0.4},
+    settings:{aspect:'9:16', gold:'#C9A55A', trans:0.5, scrim:0.82, accent:true, fade:0.4, useNarration:false, narrVol:1},
     playing:false, t:0, total:0,
-    audioCtx:null, dest:null, monitor:null, exporting:false, fontsReady:false
+    audioCtx:null, dest:null, monitor:null, exporting:false, fontsReady:false,
+    voices:[], narrationBuffer:null, narrationSrc:null, narrationGain:null, _xiUrl:null
   };
   const CONTENT_TEMPLATE = [
     {style:'hero', head:'M LANDMARK RESIDENCES', sub:'Biểu tượng sống đẳng cấp bên sông Hàn', cta:''},
@@ -442,6 +494,7 @@
     S.monitor=S.audioCtx.createGain(); S.monitor.gain.value=1;
     S.masterBus=S.audioCtx.createGain();
     S.masterBus.connect(S.dest); S.masterBus.connect(S.monitor); S.monitor.connect(S.audioCtx.destination);
+    S.narrationGain=S.audioCtx.createGain(); S.narrationGain.gain.value=S.settings.narrVol; S.narrationGain.connect(S.masterBus);
     hookAll();
   }
   function hookAll(){ if(S.audioCtx) S.scenes.forEach(hookAudio); }
@@ -464,6 +517,19 @@
       if(i<n-1){ g.setValueAtTime(1, t1-T); g.linearRampToValueAtTime(0, t1); }
     });
   }
+  // narration (ElevenLabs mp3 -> AudioBuffer) chạy song song với reel
+  function startNarration(when, offset){
+    stopNarration();
+    if(!S.audioCtx || !S.narrationBuffer || !S.settings.useNarration || !S.narrationGain) return;
+    try{
+      const src=S.audioCtx.createBufferSource();
+      src.buffer=S.narrationBuffer;
+      src.connect(S.narrationGain);
+      src.start(when, Math.max(0, offset||0));
+      S.narrationSrc=src;
+    }catch(e){}
+  }
+  function stopNarration(){ if(S.narrationSrc){ try{S.narrationSrc.stop();}catch(e){} S.narrationSrc=null; } }
 
   // ---------- Playback ----------
   let rafId=null, startWall=0, startAt=0;
@@ -488,6 +554,7 @@
     S.scenes.forEach(s=>{ s._playing=false; try{s.video.pause();}catch(e){} });
     startAt=S.t; startWall=performance.now()/1000;
     const audRef = S.audioCtx.currentTime - S.t; scheduleGains(audRef);
+    startNarration(S.audioCtx.currentTime, S.t);
     S.playing=true; setPlayIcon(true);
     rafId=requestAnimationFrame(tickPlayback);
   }
@@ -495,6 +562,7 @@
     S.playing=false; if(rafId) cancelAnimationFrame(rafId);
     S.scenes.forEach(s=>{ if(s._playing){try{s.video.pause();}catch(e){} s._playing=false;} });
     if(S.audioCtx) S.scenes.forEach(s=>{ if(s._gain) s._gain.gain.cancelScheduledValues(S.audioCtx.currentTime), s._gain.gain.setValueAtTime(0,S.audioCtx.currentTime); });
+    stopNarration();
     setPlayIcon(false);
   }
   function setPlayIcon(p){ $('#playIcon').innerHTML = p ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'; }
@@ -520,6 +588,7 @@
     // deterministic-ish real-time playback from 0
     S.scenes.forEach(s=>{ s._playing=false; try{s.video.pause();}catch(e){} });
     const audRef=S.audioCtx.currentTime + 0.05; scheduleGains(audRef);
+    startNarration(audRef, 0);
     startAt=0; startWall=performance.now()/1000 + 0.05; S.playing=true;
     await new Promise(res=>{
       function loop(){
@@ -538,6 +607,7 @@
       requestAnimationFrame(loop);
     });
     S.playing=false; S.scenes.forEach(s=>{ if(s._playing){try{s.video.pause();}catch(e){}s._playing=false;} });
+    stopNarration();
     setTimeout(()=>rec.stop(),250);
     await done;
 
@@ -650,17 +720,17 @@
     $('#accent').addEventListener('change',e=>{ S.settings.accent=e.target.checked; if(!S.playing) drawStaticAt(S.t); });
   }
 
-  // ---------- Presets (window.storage) ----------
-  async function savePreset(){
+  // ---------- Presets (localStorage của trình duyệt) ----------
+  function savePreset(){
     const data=S.scenes.map(s=>({style:s.style,head:s.head,sub:s.sub,cta:s.cta}));
     if(!data.length){ toast('Chưa có cảnh nào để lưu.'); return; }
-    try{ await window.storage.set('reelstudio:preset', JSON.stringify(data), false); toast('Đã lưu bộ chữ ('+data.length+' cảnh).'); }
-    catch(e){ toast('Không lưu được (trình duyệt chặn lưu trữ).'); }
+    try{ localStorage.setItem('reelstudio:preset', JSON.stringify(data)); toast('Đã lưu bộ chữ ('+data.length+' cảnh).'); }
+    catch(e){ toast('Không lưu được — có thể trình duyệt đang ở chế độ ẩn danh.'); }
   }
-  async function loadPreset(){
+  function loadPreset(){
     try{
-      const r=await window.storage.get('reelstudio:preset', false); if(!r){ toast('Chưa có bộ chữ nào được lưu.'); return; }
-      applyTexts(JSON.parse(r.value)); toast('Đã nạp bộ chữ đã lưu.');
+      const v=localStorage.getItem('reelstudio:preset'); if(!v){ toast('Chưa có bộ chữ nào được lưu.'); return; }
+      applyTexts(JSON.parse(v)); toast('Đã nạp bộ chữ đã lưu.');
     }catch(e){ toast('Chưa có bộ chữ nào được lưu.'); }
   }
   function applyTexts(arr){
@@ -675,6 +745,73 @@
   function toast(msg){ let el=$('#toast'); if(!el){ el=document.createElement('div'); el.id='toast';
     el.style.cssText='position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#1E222C;border:1px solid var(--line);color:var(--text);padding:11px 18px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.5)';
     document.body.appendChild(el);} el.textContent=msg; el.style.opacity='1'; clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.style.opacity='0',2600); }
+
+  // ---------- ElevenLabs lồng tiếng ----------
+  const XI_KEY='reelstudio:xikey';
+  function xiSetStatus(msg, ok){ const el=$('#xiStatus'); if(!el) return; el.textContent=msg||'';
+    el.style.color = ok===false ? '#E8887A' : (ok ? 'var(--gold-soft)' : 'var(--muted)'); }
+  function xiGetKey(){ return ($('#xiKey').value||'').trim(); }
+  function xiSaveKey(k){ try{ localStorage.setItem(XI_KEY,k); }catch(e){} }
+  async function xiLoadVoices(){
+    const key=xiGetKey(); if(!key){ xiSetStatus('Hãy dán API key trước.',false); return; }
+    xiSaveKey(key); xiSetStatus('Đang tải danh sách giọng…');
+    try{
+      const r=await fetch('https://api.elevenlabs.io/v1/voices',{headers:{'xi-api-key':key}});
+      if(!r.ok){ xiSetStatus('Lỗi '+r.status+' — key sai hoặc đã hết hạn?',false); return; }
+      const data=await r.json(); const voices=data.voices||[]; S.voices=voices;
+      const sel=$('#xiVoice'); sel.innerHTML='';
+      if(!voices.length){ sel.innerHTML='<option value="">Tài khoản chưa có giọng nào</option>'; xiSetStatus('Không tìm thấy giọng nào.',false); return; }
+      voices.forEach(v=>{ const o=document.createElement('option'); o.value=v.voice_id;
+        const lab=v.labels?Object.values(v.labels).slice(0,2).join(' · '):''; o.textContent=v.name+(lab?' — '+lab:''); sel.appendChild(o); });
+      xiSetStatus('Đã tải '+voices.length+' giọng. Chọn giọng rồi bấm "Tạo lồng tiếng".',true);
+    }catch(e){ xiSetStatus('Không gọi được ElevenLabs (mạng hoặc CORS). Thử lại sau.',false); }
+  }
+  function xiFillScript(){
+    if(!S.scenes.length){ toast('Thêm clip & nhập chữ trước đã.'); return; }
+    const lines=S.scenes.map(s=>[s.head,s.sub,s.cta].map(x=>(x||'').trim()).filter(Boolean).join('. ')).filter(Boolean);
+    if(!lines.length){ xiSetStatus('Các cảnh chưa có chữ để đọc.',false); return; }
+    $('#xiScript').value=lines.join('\n');
+    xiSetStatus('Đã đổ kịch bản từ '+lines.length+' cảnh — anh có thể sửa lại.',true);
+  }
+  async function xiGenerate(){
+    const key=xiGetKey(); if(!key){ xiSetStatus('Hãy dán API key trước.',false); return; }
+    const voice=$('#xiVoice').value; if(!voice){ xiSetStatus('Chọn một giọng đọc đã.',false); return; }
+    const text=($('#xiScript').value||'').trim(); if(!text){ xiSetStatus('Kịch bản đang trống.',false); return; }
+    xiSaveKey(key);
+    const btn=$('#xiGen'); const old=btn.textContent; btn.disabled=true; btn.textContent='Đang tạo…'; xiSetStatus('Đang tạo lồng tiếng…');
+    try{
+      const body={ text, model_id:$('#xiModel').value, voice_settings:{ stability:+$('#xiStab').value, similarity_boost:+$('#xiSim').value } };
+      const r=await fetch('https://api.elevenlabs.io/v1/text-to-speech/'+voice,{ method:'POST',
+        headers:{'xi-api-key':key,'Content-Type':'application/json','Accept':'audio/mpeg'}, body:JSON.stringify(body) });
+      if(!r.ok){ let m=''; try{ const j=await r.json(); m=(j&&j.detail&&(j.detail.message||j.detail))||''; }catch(e){}
+        xiSetStatus('Lỗi '+r.status+(m?' — '+m:' (key/quota?)'),false); return; }
+      const blob=await r.blob();
+      if(S._xiUrl){ try{URL.revokeObjectURL(S._xiUrl);}catch(e){} }
+      S._xiUrl=URL.createObjectURL(blob);
+      const au=$('#xiAudio'); au.src=S._xiUrl; au.style.display='block';
+      const dl=$('#xiDl'); dl.innerHTML=''; const a=document.createElement('a'); a.href=S._xiUrl; a.download='longtieng-'+Date.now()+'.mp3';
+      a.textContent='⬇  Tải mp3 lồng tiếng ('+(blob.size/1024).toFixed(0)+'KB)'; dl.appendChild(a); dl.classList.add('show');
+      ensureAudio();
+      const ab=await blob.arrayBuffer();
+      S.audioCtx.decodeAudioData(ab.slice(0),
+        (buf)=>{ S.narrationBuffer=buf;
+          xiSetStatus('Xong! Nghe thử ở trên. Bật "Ghép vào video" rồi xuất reel để đưa vào clip.',true); },
+        ()=>{ S.narrationBuffer=null; xiSetStatus('Tạo xong (nghe thử được) nhưng không giải mã để ghép — vẫn tải mp3 dùng ngoài được.',false); });
+    }catch(e){ xiSetStatus('Không gọi được ElevenLabs (mạng hoặc CORS).',false); }
+    finally{ btn.disabled=false; btn.textContent=old; }
+  }
+  function bindElevenLabs(){
+    try{ const k=localStorage.getItem(XI_KEY); if(k) $('#xiKey').value=k; }catch(e){}
+    $('#xiLoadVoices').addEventListener('click',xiLoadVoices);
+    $('#xiFill').addEventListener('click',xiFillScript);
+    $('#xiGen').addEventListener('click',xiGenerate);
+    $('#xiStab').addEventListener('input',e=>$('#xiStabV').textContent=Math.round(e.target.value*100)+'%');
+    $('#xiSim').addEventListener('input',e=>$('#xiSimV').textContent=Math.round(e.target.value*100)+'%');
+    $('#xiVol').addEventListener('input',e=>{ S.settings.narrVol=+e.target.value; $('#xiVolV').textContent=Math.round(e.target.value*100)+'%';
+      if(S.narrationGain) S.narrationGain.gain.value=S.settings.narrVol; });
+    $('#xiUse').addEventListener('change',e=>{ S.settings.useNarration=e.target.checked;
+      if(e.target.checked && !S.narrationBuffer) toast('Chưa có lồng tiếng — bấm "Tạo lồng tiếng" trước.'); });
+  }
 
   // ---------- Wiring ----------
   function bindUpload(){
@@ -711,7 +848,7 @@
   }
 
   // ---------- Init ----------
-  applyCanvasSize(); bindUpload(); bindTransport(); bindEditor(); bindSettings(); loadFonts();
+  applyCanvasSize(); bindUpload(); bindTransport(); bindEditor(); bindSettings(); bindElevenLabs(); loadFonts();
   window.addEventListener('resize',()=>{ if(!S.playing) drawStaticAt(S.t); });
 })();
 </script>
